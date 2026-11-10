@@ -137,7 +137,7 @@
 
   var now = new Date();
   var S = { tab:'cal', y:now.getFullYear(), m:now.getMonth() + 1, mode:'month', kind:'Chi', day:null, form:null, busy:false, delArm:false, detail:null, back:null, goalForm:null, gArm:'' };
-  var GOALS = [], K = 1000; // số tiền mục tiêu nhập theo nghìn ₩
+  var GOALS = [], MONTHS = [], K = 1000; // số tiền mục tiêu nhập theo nghìn ₩
 
   function emptyForm(type) {
     return { id:'', type:type || 'Chi', date:ymd(new Date()), note:'', amount:'', category:type === 'Thu' ? 'Income' : 'Food', merchant:'' };
@@ -187,8 +187,8 @@
     }
     while ((first + n) % 7) { cells += '<button disabled></button>'; n++; }
     var shown = S.day ? rows.filter(function (r) { return r.date === S.day; }) : rows;
-    var g = activeGoal(), thisMonth = y === new Date().getFullYear() && m === new Date().getMonth() + 1;
-    return (g && thisMonth ? budgetBox(goalStats(g)) : '') + periodBar('Tháng ' + m + '/' + y) +
+    var thisMonth = y === new Date().getFullYear() && m === new Date().getMonth() + 1;
+    return (thisMonth ? budgetBox() : '') + periodBar('Tháng ' + m + '/' + y) +
       '<div class="cal"><div class="wk"><div>T2</div><div>T3</div><div>T4</div><div>T5</div><div>T6</div><div>T7</div><div>CN</div></div><div class="grid">' + cells + '</div></div>' +
       boxes(rows) + (S.day ? '<button class="muted" id="allDays" style="text-align:left">‹ Xem cả tháng</button>' : '') + txList(shown);
   }
@@ -277,53 +277,88 @@
   };
   var dmy = function (s) { return s.slice(8) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4); };
   var signed = function (n) { return (n >= 0 ? '+' : '−') + won(Math.abs(n)); };
-  var net = function (from, to) {
-    var t = 0;
-    DATA.forEach(function (r) { if (r.date >= from && r.date <= to) t += r.type === 'Thu' ? r.amount : -r.amount; });
-    return t;
-  };
   function activeGoal() { return GOALS.filter(function (g) { return g.status !== 'done'; })[0]; }
 
-  function goalStats(g) {
-    var today = ymd(new Date()), end = addMonths(g.start, g.months);
-    var target = g.items.reduce(function (s, it) { return s + it.amount; }, 0) * K;
-    var saved = net(g.start, today) + g.adjust * K;
-    var total = Math.max(1, days(g.start, end)), elapsed = Math.min(total, Math.max(0, days(g.start, today) + 1));
-    var expected = target * elapsed / total, remaining = Math.max(0, target - saved);
-    // Số tiền mỗi tháng tính lại theo số còn thiếu / số tháng còn lại
-    var passed = 0;
-    while (passed < g.months && addMonths(g.start, passed + 1) <= today) passed++;
-    var monthsLeft = Math.max(1, g.months - passed), need = remaining / monthsLeft;
-    // Tốc độ để dành mỗi ngày: từ lúc bắt đầu nếu đã đủ 30 ngày, chưa thì lấy 90 ngày gần nhất
-    var rate = elapsed >= 30 ? saved / elapsed : net(addDays(today, -89), today) / 90;
-    var eta = remaining <= 0 ? today : rate > 0 ? addDays(today, Math.ceil(remaining / rate)) : null;
-    var status;
-    if (remaining <= 0) status = ['ok', '🎉 Đã đủ tiền! Bấm "Hoàn thành" để lưu lại'];
-    else if (today >= end) status = ['bad', '🔴 Đã hết hạn, còn thiếu ' + won(remaining)];
-    else if (!eta || eta > end) status = ['bad', '🔴 Không kịp nếu giữ mức để dành hiện tại'];
-    else if (saved < expected) status = ['warn', '🟡 Chậm ' + won(expected - saved) + ' so với kế hoạch'];
-    else status = ['ok', '🟢 Đúng tiến độ' + (saved - expected >= 1000 ? ' (dư ' + won(saved - expected) + ')' : '')];
-    // Mức chi tối đa tháng này = thu trung bình 3 tháng trước − số cần để dành mỗi tháng
-    // (chỉ tính những tháng đã có dữ liệu)
-    var n = new Date(), inc = 0, cnt = 0;
-    for (var i = 1; i <= 3; i++) {
-      var d = new Date(n.getFullYear(), n.getMonth() - i, 1);
-      var mr = DATA.filter(function (r) { return inPeriod(r, d.getFullYear(), d.getMonth() + 1); });
-      if (mr.length) { cnt++; inc += sum(mr.filter(function (r) { return r.type === 'Thu'; })); }
+  // ===== Kế hoạch tiết kiệm theo tháng =====
+  // Ngày 1: chốt mục tiêu tháng = (tổng mục tiêu − đã tích lũy) / số tháng còn lại (tháng cuối nhận phần lẻ).
+  // Trong tháng: con số này cố định, giao dịch mới chỉ ảnh hưởng hạn mức hôm nay qua số dư chuyển tiếp.
+  // Hết tháng: quyết toán. Đã để dành = min(Thu − Chi, mục tiêu tháng); phần vượt là tiền dư chưa phân bổ,
+  // người dùng chia vào: tiết kiệm / ngân sách tháng sau / dự phòng (mỗi đồng chỉ vào 1 nhóm).
+  // Mọi số được tính lại từ giao dịch mỗi lần mở app, nên sửa/xóa giao dịch cũ thì kết quả tự đúng lại.
+  var mkey = function (y, m) { return y + '-' + pad(m); };
+  var mshift = function (k, n) { var d = new Date(+k.slice(0, 4), +k.slice(5, 7) - 1 + n, 1); return mkey(d.getFullYear(), d.getMonth() + 1); };
+  var mdiff = function (a, b) { return (+b.slice(0, 4) - +a.slice(0, 4)) * 12 + (+b.slice(5, 7) - +a.slice(5, 7)); };
+  var mdays = function (k) { return new Date(+k.slice(0, 4), +k.slice(5, 7), 0).getDate(); };
+  var mlabel = function (k) { return 'T' + +k.slice(5, 7) + '/' + k.slice(0, 4); };
+  var goalTotal = function (g) { return g.items.reduce(function (s, it) { return s + it.amount; }, 0) * K; };
+  function monthTx(k) {
+    var inc = 0, exp = 0, n = 0;
+    DATA.forEach(function (r) {
+      if (r.date.slice(0, 7) !== k) return;
+      if (r.type === 'Thu') { inc += r.amount; n++; } else exp += r.amount;
+    });
+    return { inc:inc, exp:exp, incCount:n };
+  }
+  function monthSet(k) { return MONTHS.filter(function (x) { return x.month === k; })[0] || {}; }
+
+  function plan(g, today) {
+    var total = goalTotal(g), cur = today.slice(0, 7);
+    var first = g.start.slice(0, 7), last = mshift(first, g.months - 1);
+    var acc = g.adjust * K, reserve = 0, carry = 0, rows = [];
+    for (var k = first; k <= cur && k <= last; k = mshift(k, 1)) {
+      var tx = monthTx(k), set = monthSet(k), left = mdiff(k, last) + 1;
+      var need = Math.max(0, total - acc);
+      var target = left <= 1 ? need : Math.round(need / left);
+      var prevInc = monthTx(mshift(k, -1)).inc;
+      var expected = set.expected > 0 ? set.expected : prevInc;
+      var budget = expected - target + carry, days = mdays(k);
+      var row = { k:k, left:left, need:need, accStart:acc, target:target, expected:expected,
+        expectedSrc:set.expected > 0 ? 'manual' : prevInc > 0 ? 'auto' : 'none', extra:carry,
+        budget:budget, days:days, base:Math.round(budget / days), inc:tx.inc, incCount:tx.incCount, exp:tx.exp, closed:k < cur };
+      carry = 0;
+      if (row.closed) {
+        row.net = tx.inc - tx.exp;
+        row.saved = Math.min(row.net, target);
+        row.surplus = Math.max(0, row.net - target);
+        // Phân bổ đã lưu, không vượt quá số dư (khi giao dịch cũ bị sửa làm số dư nhỏ lại)
+        var room = row.surplus, take = function (v) { var t = Math.max(0, Math.min(Number(v) || 0, room)); room -= t; return t; };
+        row.toGoal = take(set.toGoal); row.toBudget = take(set.toBudget); row.toReserve = take(set.toReserve);
+        row.unalloc = room;
+        acc += row.saved + row.toGoal; reserve += row.toReserve; carry = row.toBudget;
+        row.accEnd = acc;
+      }
+      rows.push(row);
     }
-    inc = cnt ? inc / cnt : 0;
-    var budget = inc - need;
-    var spent = sum(DATA.filter(function (r) { return r.type === 'Chi' && inPeriod(r, n.getFullYear(), n.getMonth() + 1); }));
-    var dLeft = new Date(n.getFullYear(), n.getMonth() + 1, 0).getDate() - n.getDate() + 1;
-    return { target:target, saved:saved, remaining:remaining, end:end, need:need, plan:target / g.months, monthsLeft:monthsLeft,
-      eta:eta, status:status, avgInc:inc, budget:budget, spent:spent, perDay:(budget - spent) / dLeft };
+    var now = rows.length && !rows[rows.length - 1].closed ? rows[rows.length - 1] : null;
+    var closed = rows.filter(function (r) { return r.closed; });
+    var avg = closed.length ? closed.reduce(function (s, r) { return s + r.saved + r.toGoal; }, 0) / closed.length : 0;
+    var remain = Math.max(0, total - acc);
+    return { total:total, acc:acc, remain:remain, reserve:reserve, rows:rows, now:now, first:first, last:last,
+      before:cur < first, ended:cur > last, done:acc >= total, avg:avg,
+      eta:remain <= 0 ? cur : avg > 0 ? mshift(cur, Math.ceil(remain / avg) - 1) : null };
   }
-  function budgetBox(st) {
-    if (!(st.avgInc > 0) || st.remaining <= 0) return '';
-    var over = st.budget - st.spent < 0;
-    return '<div class="box wide"><span>' + (over ? 'Tháng này đã chi vượt mức' : 'Hôm nay còn được chi') + '</span><b class="num ' + (over ? 'exp' : 'inc') + '">' +
-      won(over ? st.spent - st.budget : st.perDay) + '</b></div>';
+
+  // Hạn mức theo ngày có cộng dồn: được tiêu đến hết ngày d = hạn mức cơ sở × d (ngày cuối tháng = cả ngân sách)
+  function daily(row, today) {
+    var d = +today.slice(8), before = 0, todaySpent = 0;
+    DATA.forEach(function (r) {
+      if (r.type !== 'Chi' || r.date.slice(0, 7) !== row.k) return;
+      var day = +r.date.slice(8);
+      if (day < d) before += r.amount; else if (day === d) todaySpent += r.amount;
+    });
+    var upTo = function (n) { return n >= row.days ? row.budget : row.base * n; };
+    var carry = upTo(d - 1) - before, todayBudget = upTo(d) - before;
+    return { day:d, carry:carry, todayBudget:todayBudget, todaySpent:todaySpent, left:todayBudget - todaySpent,
+      spent:before + todaySpent, budgetLeft:row.budget - before - todaySpent };
   }
+
+  function budgetBox() {
+    var g = activeGoal(); if (!g) return '';
+    var p = plan(g, ymd(new Date())); if (!p.now || p.now.expectedSrc === 'none') return '';
+    var dl = daily(p.now, ymd(new Date()));
+    return '<div class="box wide"><span>Hôm nay còn được tiêu</span><b class="num ' + (dl.left < 0 ? 'exp' : 'inc') + '">' + signed(dl.left) + '</b></div>';
+  }
+
   function ring(p, top, bottom) {
     var r = 70, C = 2 * Math.PI * r, len = Math.max(0, Math.min(1, p)) * C;
     return '<div class="ring"><svg viewBox="0 0 200 200" role="img" aria-label="Đã đạt ' + Math.round(p * 100) + '% mục tiêu">' +
@@ -333,47 +368,106 @@
       '<text x="100" y="122" text-anchor="middle" font-size="12" fill="var(--muted)">' + top + '</text>' +
       '<text x="100" y="138" text-anchor="middle" font-size="12" fill="var(--muted)">' + bottom + '</text></svg></div>';
   }
+  var line = function (label, value, cls, note) {
+    return '<div class="box wide"><span>' + label + (note ? '<br><small class="muted">' + note + '</small>' : '') + '</span><b class="num ' + (cls || '') + '">' + value + '</b></div>';
+  };
+  var tone = function (n) { return n < 0 ? 'exp' : 'inc'; };
+
+  function renderMonth(p, today) {
+    var r = p.now, dl = daily(r, today), f = S.monthForm && S.monthForm.k === r.k ? S.monthForm : null;
+    var html = '<div class="card"><b>' + mlabel(r.k) + ' · chốt ngày 1</b>';
+    if (f && f.mode === 'exp' || r.expectedSrc === 'none') {
+      return html + '<div class="muted">' + (r.expectedSrc === 'none' ? 'Tháng trước chưa có dữ liệu lương. ' : '') + 'Nhập thu nhập dự kiến tháng này (₩, để trống = lấy theo thu tháng trước):</div>' +
+        '<div class="irow"><input class="amt" style="flex:1" id="m-exp" type="text" inputmode="numeric" placeholder="1335600" value="' + esc(f && f.mode === 'exp' ? f.expected : '') + '"></div>' +
+        '<div class="btns"><button class="ghost" id="mSave"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? 'Đang lưu…' : 'Lưu') + '</button>' +
+        (r.expectedSrc === 'none' ? '' : '<button class="ghost" id="mCancel">Hủy</button>') + '</div></div>';
+    }
+    // Gọn: 4 dòng. Thu nhập dự kiến chỉ còn là link "sửa" nhỏ để chỉnh khi lương tháng này thay đổi
+    var d1 = +r.k.slice(5, 7);
+    html += line('Để dành tháng này', won(r.target), '', 'chốt 0h 1/' + d1 + ' · thiếu ' + won(r.need) + ' ÷ ' + r.left + ' tháng') +
+      line('Ngân sách tháng', won(r.budget), r.budget < 0 ? 'exp' : '', 'đã chi ' + won(dl.spent) + ' · còn ' + signed(dl.budgetLeft) +
+        ' · <button class="muted" id="mExpEdit" style="text-decoration:underline;padding:0">sửa thu dự kiến</button>') +
+      line('Hạn mức mỗi ngày', won(r.base), '', 'cố định cả tháng') +
+      line('Hôm nay còn được tiêu', signed(dl.left), tone(dl.left), won(r.base) + ' ' + (dl.carry < 0 ? '−' : '+') + ' chuyển tiếp ' + won(Math.abs(dl.carry)) + ' − đã chi ' + won(dl.todaySpent));
+    if (r.budget < 0) html += '<div class="status bad">Thu nhập dự kiến không đủ cho số tiền cần để dành tháng này.</div>';
+    return html + '</div>';
+  }
+
+  function renderSettle(p) {
+    var closed = p.rows.filter(function (r) { return r.closed; }).reverse();
+    if (!closed.length) return '';
+    return '<div class="card"><b>Quyết toán các tháng</b>' + closed.map(function (r) {
+      var f = S.monthForm && S.monthForm.k === r.k && S.monthForm.mode === 'alloc' ? S.monthForm : null, diff = r.net - r.target;
+      var html = '<div class="item" style="border-top:1px solid var(--line);padding-top:10px"><div><b>' + mlabel(r.k) + '</b><span class="num ' + tone(diff) + '">' +
+        (diff >= 0 ? 'Vượt ' : 'Thiếu ') + won(Math.abs(diff)) + '</span></div>' +
+        '<div class="muted">Thu ' + won(r.inc) + ' · Chi ' + won(r.exp) + '<br>Mục tiêu ' + won(r.target) + ' · đã để dành ' + signed(r.saved) + '</div>';
+      if (r.surplus > 0 && !f) {
+        html += '<div class="muted">Tiền dư ' + won(r.surplus) + ': tiết kiệm ' + won(r.toGoal) + ' · ngân sách tháng sau ' + won(r.toBudget) +
+          ' · dự phòng ' + won(r.toReserve) + (r.unalloc ? ' · <b class="exp">chưa phân bổ ' + won(r.unalloc) + '</b>' : '') + '</div>' +
+          '<button class="ghost" data-alloc="' + r.k + '">Phân bổ tiền dư</button>';
+      }
+      if (f) {
+        html += '<div class="muted">Chia ' + won(r.surplus) + ' tiền dư (₩, tổng không vượt số dư):</div>' +
+          [['a-goal', 'Tiết kiệm mục tiêu', f.toGoal], ['a-budget', 'Ngân sách tháng sau', f.toBudget], ['a-reserve', 'Quỹ dự phòng', f.toReserve]].map(function (x) {
+            return '<div class="irow"><label for="' + x[0] + '" style="flex:1">' + x[1] + '</label><input class="amt" style="flex:0 0 130px" id="' + x[0] + '" type="text" inputmode="numeric" placeholder="0" value="' + esc(x[2]) + '"></div>';
+          }).join('') +
+          '<div class="btns"><button class="ghost" id="mSave"' + (S.busy ? ' disabled' : '') + '>' + (S.busy ? 'Đang lưu…' : 'Lưu') + '</button><button class="ghost" id="mCancel">Hủy</button></div>';
+      }
+      return html + '</div>';
+    }).join('') + '</div>';
+  }
 
   function renderGoal() {
     if (S.goalForm) return renderGoalForm();
     var g = activeGoal(), html;
     if (!g) {
-      html = '<div class="card"><div class="empty">Chưa có mục tiêu tiết kiệm.<br>Tiền để dành được tính tự động = Thu − Chi kể từ ngày bắt đầu.</div>' +
+      html = '<div class="card"><div class="empty">Chưa có mục tiêu tiết kiệm.<br>Ngày 1 mỗi tháng app chốt số tiền cần để dành, hết tháng thì quyết toán.</div>' +
         '<button class="submit" id="gNew">+ Tạo mục tiêu</button></div>';
     } else {
-      var st = goalStats(g), cum = 0;
+      var today = ymd(new Date()), p = plan(g, today), cum = 0, status;
+      // Phần trên lấy số thực tế tới hôm nay; số chốt đầu tháng chỉ dùng cho thẻ tháng bên dưới
+      var real = p.acc + (p.now ? p.now.inc - p.now.exp : 0), realLeft = Math.max(0, p.total - real);
       var items = g.items.map(function (it) {
-        var have = Math.max(0, Math.min(it.amount * K, st.saved - cum)), p = have / (it.amount * K);
+        var have = Math.max(0, Math.min(it.amount * K, real - cum)), q = have / (it.amount * K);
         cum += it.amount * K;
-        return '<div class="item"><div><span>' + (p >= 1 ? '✅ ' : '') + esc(it.name || 'Khoản') + '</span><span class="num muted">' +
-          won(have) + ' / ' + won(it.amount * K) + '</span></div><div class="bar"><i style="width:' + (p * 100).toFixed(1) + '%"></i></div></div>';
+        return '<div class="item"><div><span>' + (q >= 1 ? '✅ ' : '') + esc(it.name || 'Khoản') + '</span><span class="num muted">' +
+          won(have) + ' / ' + won(it.amount * K) + '</span></div><div class="bar"><i style="width:' + (q * 100).toFixed(1) + '%"></i></div></div>';
       }).join('');
-      html = '<div class="card"><div><h2>' + esc(g.name) + '</h2><div class="muted">' + dmy(g.start) + ' → ' + dmy(st.end) + ' · ' + g.months + ' tháng</div></div>' +
-        ring(st.saved / st.target, signed(st.saved), 'trên ' + won(st.target)) +
-        '<div class="status ' + st.status[0] + '">' + st.status[1] + '</div>' +
-        '<div class="boxes"><div class="box wide"><span>Còn thiếu</span><b class="num">' + won(st.remaining) + '</b></div>' +
-        (st.remaining > 0 ? '<div class="box wide"><span>Cần để dành mỗi tháng<br><small class="muted">còn ' + st.monthsLeft + ' tháng · kế hoạch ban đầu ' + won(st.plan) + '</small></span><b class="num">' + won(st.need) + '</b></div>' : '') +
-        '</div>' +
-        (st.remaining > 0 ? '<div class="muted">' + (st.eta ? 'Với tốc độ hiện tại, dự kiến đạt mục tiêu vào <b style="color:var(--fg)">' + dmy(st.eta) + '</b>' :
-          'Chưa dự báo được ngày đạt mục tiêu vì gần đây đang chi nhiều hơn thu') + '</div>' : '') +
-        items + '</div>';
-      if (st.remaining > 0 && st.avgInc > 0) {
-        html += '<div class="card"><b>Gợi ý chi tiêu tháng này</b>' +
-          '<div class="muted">Thu trung bình các tháng trước ' + won(st.avgInc) + ' − để dành ' + won(st.need) + ' = chi tối đa <b style="color:var(--fg)">' +
-          won(Math.max(0, st.budget)) + '</b>. Tháng này đã chi ' + won(st.spent) + '.</div>' + budgetBox(st) + '</div>';
+      if (p.done || real >= p.total) status = ['ok', '🎉 Đã đủ tiền! Bấm "Hoàn thành" để lưu lại'];
+      else if (p.before) status = ['warn', '⏳ Mục tiêu bắt đầu từ ' + mlabel(p.first)];
+      else if (p.ended) status = ['bad', '🔴 Đã hết hạn, còn thiếu ' + won(p.remain)];
+      else {
+        var dl = daily(p.now, today);
+        if (dl.left >= 0) status = ['ok', '🟢 Chi tiêu đang trong hạn mức'];
+        else if (dl.budgetLeft >= 0) status = ['warn', '🟡 Tiêu nhanh hơn kế hoạch ' + won(-dl.left) + ', các ngày sau sẽ bị trừ bớt'];
+        else status = ['bad', '🔴 Đã vượt ngân sách cả tháng ' + won(-dl.budgetLeft)];
       }
-      html += '<div class="btns"><button class="ghost" id="gEdit">Sửa</button>' +
+      html = '<div class="card"><div><h2>' + esc(g.name) + '</h2><div class="muted">' + mlabel(p.first) + ' → ' + mlabel(p.last) + ' · ' + g.months + ' tháng</div></div>' +
+        ring(real / p.total, signed(real), 'trên ' + won(p.total)) +
+        '<div class="status ' + status[0] + '">' + status[1] + '</div>' +
+        '<div class="boxes">' + line('Đã tích lũy', won(real), '', 'tính đến hôm nay') + line('Còn thiếu', won(realLeft)) +
+        (p.reserve ? line('Quỹ dự phòng', won(p.reserve), '', 'không tính vào mục tiêu') : '') + '</div>' +
+        (!p.done && p.avg > 0 ? '<div class="muted">Với mức để dành trung bình ' + won(p.avg) + '/tháng, dự kiến đủ vào <b style="color:var(--fg)">' + mlabel(p.eta) + '</b></div>' : '') +
+        items + '</div>';
+      if (p.now && !p.done) html += renderMonth(p, today);
+      html += renderSettle(p) +
+        '<div class="btns"><button class="ghost" id="gEdit">Sửa</button>' +
         '<button class="ghost" id="gDone">' + (S.gArm === 'done' ? 'Bấm lần nữa' : 'Hoàn thành') + '</button>' +
         '<button class="ghost exp" id="gDel">' + (S.gArm === 'del' ? 'Bấm lần nữa' : 'Xóa') + '</button></div>';
     }
     var done = GOALS.filter(function (x) { return x.status === 'done'; });
     if (done.length) {
       html += '<div class="list"><div class="dayhead"><span>Đã hoàn thành 🎉</span></div>' + done.map(function (x) {
-        var t = x.items.reduce(function (s, it) { return s + it.amount; }, 0) * K;
-        return '<div class="row"><span class="name">' + esc(x.name) + ' <small>' + (x.done ? dmy(x.done) : '') + '</small></span><span class="num">' + won(t) + '</span></div>';
+        return '<div class="row"><span class="name">' + esc(x.name) + ' <small>' + (x.done ? dmy(x.done) : '') + '</small></span><span class="num">' + won(goalTotal(x)) + '</span></div>';
       }).join('') + '</div>';
     }
     return html;
+  }
+
+  function readMonthForm() {
+    var f = S.monthForm; if (!f || S.tab !== 'goal') return;
+    if ($('m-exp')) f.expected = $('m-exp').value;
+    if ($('a-goal')) { f.toGoal = $('a-goal').value; f.toBudget = $('a-budget').value; f.toReserve = $('a-reserve').value; }
   }
 
   function emptyGoal() { return { id:'', name:'', start:ymd(new Date()), months:'6', adjust:'0', items:[{ name:'', amount:'' }] }; }
@@ -449,22 +543,23 @@
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j.ok) { if (j.msg === 'Sai mã bí mật') { KEY = ''; try { localStorage.removeItem('key'); } catch (e) {} } throw new Error(j.msg); }
-        DATA = j.data; CATS = j.cats || CATS; GOALS = j.goals || GOALS; render();
+        DATA = j.data; CATS = j.cats || CATS; GOALS = j.goals || GOALS; MONTHS = j.months || MONTHS; render();
       })
       .catch(function (e) { if (!DATA) { load.err = 'Không tải được: ' + e.message; render(); } });
   }
   function call(body, okMsg) {
     S.busy = true; render();
     body.key = KEY;
-    var goal = /Goal$/.test(body.action);
+    var goal = /Goal$|Month$/.test(body.action);
     fetch(API, { method:'POST', headers:{ 'Content-Type':'text/plain;charset=utf-8' }, body:JSON.stringify(body) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j.ok) throw new Error(j.msg);
         if (j.data) DATA = j.data;
         if (j.goals) GOALS = j.goals;
+        if (j.months) MONTHS = j.months;
         S.busy = false; S.delArm = false; S.gArm = '';
-        if (goal) S.goalForm = null;
+        if (goal) { S.goalForm = null; S.monthForm = null; }
         else { S.form = null; S.tab = S.back || 'cal'; S.back = null; }
         render(); toast(okMsg);
       })
@@ -482,7 +577,7 @@
     if (b.id === 'k-save') { KEY = $('k-in').value.trim(); try { localStorage.setItem('key', KEY); } catch (e) {} DATA = null; render(); if (KEY) load(); return; }
     if (b.id === 'retry') { DATA = null; render(); load(); return; }
     if (!DATA) return;
-    readForm(); readGoalForm();
+    readForm(); readGoalForm(); readMonthForm();
     if (b.id !== 'gDone' && b.id !== 'gDel') S.gArm = '';
     if (b.dataset.tab) { if (b.dataset.tab === 'report' && S.tab === 'report') S.detail = null; S.tab = b.dataset.tab; S.back = null; if (b.dataset.tab === 'input' && S.form && S.form.id) S.form = null; S.delArm = false; }
     else if (b.id === 'gNew') S.goalForm = emptyGoal();
@@ -508,6 +603,25 @@
     else if (b.id === 'gDel') {
       if (S.gArm !== 'del') S.gArm = 'del';
       else return call({ action:'deleteGoal', id:activeGoal().id }, 'Đã xóa mục tiêu');
+    }
+    else if (b.id === 'mExpEdit') { var cm = monthSet(ymd(new Date()).slice(0, 7)); S.monthForm = { k:ymd(new Date()).slice(0, 7), mode:'exp', expected:cm.expected ? String(cm.expected) : '' }; }
+    else if (b.dataset.alloc) {
+      var am = monthSet(b.dataset.alloc);
+      S.monthForm = { k:b.dataset.alloc, mode:'alloc', toGoal:String(am.toGoal || ''), toBudget:String(am.toBudget || ''), toReserve:String(am.toReserve || '') };
+    }
+    else if (b.id === 'mCancel') S.monthForm = null;
+    else if (b.id === 'mSave') {
+      if (!S.monthForm) { S.monthForm = { k:ymd(new Date()).slice(0, 7), mode:'exp' }; readMonthForm(); }
+      var mf = S.monthForm, old = monthSet(mf.k);
+      var rec = { month:mf.k, expected:old.expected || 0, toGoal:old.toGoal || 0, toBudget:old.toBudget || 0, toReserve:old.toReserve || 0 };
+      if (mf.mode === 'exp') rec.expected = Math.round(num(mf.expected));
+      else {
+        rec.toGoal = Math.round(num(mf.toGoal)); rec.toBudget = Math.round(num(mf.toBudget)); rec.toReserve = Math.round(num(mf.toReserve));
+        var pr = plan(activeGoal(), ymd(new Date())).rows.filter(function (r) { return r.k === mf.k; })[0];
+        if (rec.toGoal < 0 || rec.toBudget < 0 || rec.toReserve < 0) return toast('Số tiền không được âm');
+        if (pr && rec.toGoal + rec.toBudget + rec.toReserve > pr.surplus) return toast('Tổng phân bổ vượt tiền dư ' + won(pr.surplus));
+      }
+      return call({ action:'saveMonth', month:rec }, 'Đã lưu');
     }
     else if (b.id === 'prev') shift(-1);
     else if (b.id === 'next') shift(1);
