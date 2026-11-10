@@ -7,16 +7,17 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Chi tiêu">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#fff1f5">
 <link rel="apple-touch-icon" href="icon.png">
 <title>Chi tiêu</title>
 <style>
   :root {
-    --bg:#f2f3f5; --card:#ffffff; --fg:#15181d; --muted:#6b7079; --line:#e2e4e8; --chip:#e8eaee;
-    --exp:#e5484d; --inc:#2f7de1; --sel:#15181d; --sel-fg:#ffffff;
+    --bg:#fff1f5; --card:#ffffff; --fg:#3a1f2b; --muted:#8f6b7a; --line:#f7d6e1; --chip:#ffe3ec;
+    --exp:#e5484d; --inc:#2f7de1; --sel:#ec5f8a; --sel-fg:#ffffff; --acc:#f28c9b;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#000000; --card:#1c1c1e; --fg:#f2f2f4; --muted:#9a9ba1; --line:#2c2c2e; --chip:#2c2c2e;
-      --exp:#ff5a52; --inc:#4a9dff; --sel:#f2f2f4; --sel-fg:#000000; color-scheme:dark; }
+    :root { --bg:#1b1015; --card:#2a1a21; --fg:#fbeef3; --muted:#c29cab; --line:#3d2630; --chip:#3a2430;
+      --exp:#ff6b6b; --inc:#5aa2ff; --sel:#ff8fb0; --sel-fg:#2a0f18; --acc:#ff8fb0; color-scheme:dark; }
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 -apple-system, system-ui, sans-serif; -webkit-tap-highlight-color:transparent; }
@@ -75,7 +76,7 @@
   nav { position:fixed; left:0; right:0; bottom:0; background:var(--card); border-top:1px solid var(--line); display:flex; justify-content:center; padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); }
   nav div { display:flex; width:100%; max-width:560px; }
   nav button { flex:1; padding:8px 0; border-radius:12px; font-size:13px; color:var(--muted); display:grid; justify-items:center; gap:2px; }
-  nav button.on { color:var(--fg); background:var(--chip); font-weight:600; }
+  nav button.on { color:var(--sel); background:var(--chip); font-weight:600; }
   nav svg { width:22px; height:22px; }
   .center { padding:48px 8px; text-align:center; color:var(--muted); display:grid; gap:12px; }
   .center input { font:inherit; font-size:16px; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
@@ -84,7 +85,7 @@
   .ring { display:flex; justify-content:center; }
   .ring svg { width:180px; height:auto; }
   .bar { height:8px; background:var(--chip); border-radius:999px; overflow:hidden; }
-  .bar i { display:block; height:100%; border-radius:999px; background:var(--inc); }
+  .bar i { display:block; height:100%; border-radius:999px; background:var(--acc); }
   .item { display:grid; gap:4px; }
   .item div:first-child { display:flex; justify-content:space-between; gap:8px; }
   .status { padding:10px 12px; border-radius:10px; font-weight:600; }
@@ -361,10 +362,10 @@
 
   function ring(p, top, bottom) {
     var r = 70, C = 2 * Math.PI * r, len = Math.max(0, Math.min(1, p)) * C;
-    return '<div class="ring"><svg viewBox="0 0 200 200" role="img" aria-label="Đã đạt ' + Math.round(p * 100) + '% mục tiêu">' +
+    return '<div class="ring"><svg viewBox="0 0 200 200" role="img" aria-label="Đã đạt ' + Math.max(0, Math.round(p * 100)) + '% mục tiêu">' +
       '<circle cx="100" cy="100" r="' + r + '" fill="none" stroke="var(--chip)" stroke-width="20"/>' +
-      '<circle cx="100" cy="100" r="' + r + '" fill="none" stroke="var(--inc)" stroke-width="20" stroke-linecap="round" stroke-dasharray="' + len + ' ' + (C - len) + '" transform="rotate(-90 100 100)"/>' +
-      '<text x="100" y="98" text-anchor="middle" font-size="30" font-weight="800" fill="var(--fg)">' + Math.round(p * 100) + '%</text>' +
+      '<circle cx="100" cy="100" r="' + r + '" fill="none" stroke="var(--acc)" stroke-width="20" stroke-linecap="round" stroke-dasharray="' + len + ' ' + (C - len) + '" transform="rotate(-90 100 100)"/>' +
+      '<text x="100" y="98" text-anchor="middle" font-size="30" font-weight="800" fill="var(--fg)">' + Math.max(0, Math.round(p * 100)) + '%</text>' +
       '<text x="100" y="122" text-anchor="middle" font-size="12" fill="var(--muted)">' + top + '</text>' +
       '<text x="100" y="138" text-anchor="middle" font-size="12" fill="var(--muted)">' + bottom + '</text></svg></div>';
   }
